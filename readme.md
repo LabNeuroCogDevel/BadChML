@@ -7,6 +7,10 @@ Given these annotations, we want to extract features that enable a ML algorithm 
 
 How are these selected? What is important
 
+ * 20150401 - mean,sd,80 pct of diff
+ * TODO - mean of channels some radius from tested channel's sensor
+ * TODO - sliding bandpass amplitude hist for each channel, roc curves for bad vs good in each bp window
+
 ## Annotations
 see `/data/Luna1/MultiModal/Clock/*/MEG/*bad*txt`, 
 ```bash
@@ -29,5 +33,6 @@ perl -lne 'print join("\n",split(/\s+/,uc($1))) if m/.*#(.*)/' /data/Luna1/Multi
 | SP  | |
 
 ## Learning
+see `getChannels.py` esp `runme`
 
 ### compare channels to others in similiar position (Dani)
