@@ -10,6 +10,8 @@ import sys
 import time
 
 import glob
+import random
+import re
 
 #learning
 from sklearn import svm
@@ -35,15 +37,6 @@ def checkfif(fif):
     return True
   
 
-# create {channel: ['good', [] ]} DataStruct
-def readFif(fif):
-  r = mne.io.Raw(fif)
-  channels = [ x.replace('MEG','') \
-                for x in r.ch_names   \
-                if "MEG" in x  ] 
-  return {c: { 'label': ['good', []], 'features': getFeats(r,c) } for c in channels }
-
-
 """
 getFeats(rawfif,channelnumber)
  input:
@@ -58,13 +51,13 @@ getFeats(rawfif,channelnumber)
  TODO: do in parallell??
 """
 def getFeats(r,chnldigits):
+  chidx=r.ch_names.index('MEG'+chnldigits)
+
   # define what data to extract
   nregions  = 4
   regionsize= round(r.n_times/50)
   starts    = [round(x * r.n_times/nregions) for x in range(nregions)]
 
-  # extract data
-  chidx=r.ch_names.index('MEG'+chnldigits)
 
   # init final return
   allsampleFeats = []
@@ -72,6 +65,7 @@ def getFeats(r,chnldigits):
   #np.empty(5*nregions) 
 
   for s in [int(x) for x in starts]:
+    # extract data
     d,t =  r[chidx,slice(x,x+regionsize)]
     d = d[0,:]*10**10 # make values usable for fitting
 
@@ -111,6 +105,41 @@ def getFeats(r,chnldigits):
 
   return np.hstack(np.array(allsampleFeats))
 
+
+"""
+readFif('file_raw.fif',[feature_function])
+ - reads in a fif file
+ - each channel is a sample
+   - labels all as 'good'
+   - add features  with feature_function (getFeats by default)
+ - returns  {chanelname => {label => ['good',[]], features=>[] } }
+"""
+# create {channel: ['good', [] ]} DataStruct
+def readFif(fif,featfunc=getFeats):
+  r = mne.io.Raw(fif)
+  channels = [ x.replace('MEG','') \
+                for x in r.ch_names   \
+                if "MEG" in x  ] 
+
+  return {c: \
+            { 'label': ['good', []],\
+              'features': featfunc(r,c) \
+            } for c in channels }
+
+
+"""
+do a bunch of bandpasses for roc curves
+"""
+def chFreqs(r,chnldigits):
+  chidx=r.ch_names.index('MEG'+chnldigits)
+  # extract and make values usable for fitting
+  d,t =  r[chidx,:]
+  d = d[0,:]*10**10
+ 
+  frr = rfft(d)
+  frq = fftfreq(len(t),t[1]-t[0])
+  return {'frq': frr,'t': frq}
+
 """
 readBad(badchannelTextfile)
 read bad channels from text file
@@ -133,28 +162,40 @@ def readBad(txt):
   return labels
 
 
+def fifFromTxt(f):
+  fif = f.replace('_bad','').replace('.txt','_raw.fif');
+  # test that fififle exists. otherwise, whats the point
+  if not checkfif(fif): return False
+  return fif
 """
-readAnnots(bad_channel_textfile) 
+readAnnots(bad_channel_textfile, [function_to_annote+getFeatures]) 
   - find fif file assocated with textfile
     expect _bad => '' +  '.txt' => 'raw.fif'
   - get features for all the channels
   - build features and annotations for each channel for each fif
   - mark channels in text file as bad, all others good
 """
-def readAnnots(f):
+def readAnnots(f,LabAndFeatFunc=readFif):
   # rename txt file to fif file
-  fif = f.replace('_bad','').replace('.txt','_raw.fif');
-  # test that fififle exists. otherwise, whats the point
-  if not checkfif(fif): return fif,False
+  fif = fifFromTxt(f)
+  if not fif: return (fif, False)
 
-  # read features. initialize all channels as good
-  annots = readFif(fif);
+  # read features (and default annotation)
+  if LabAndFeatFunc: 
+    # read in channel names
+    # set annotations and features
+    annots = LabAndFeatFunc(fif)
+  else:
+    annots = {}
 
   #get bad channel labels
   badlabels = readBad(f);
   # if we dont have an explicit annot, call it 'bad'
   # set annotations for channel dr[0] of this fif 
   for dr in badlabels:
+    # if we dont have data for this channel (only want bad channel labels)
+    if not annots.has_key(dr[0]): annots[dr[0]]={}  
+    # label channel bad with annotions (if any)
     annots[ dr[0] ]['label'] = ['bad', dr[1:] ]
   return (fif,annots)
 
@@ -220,14 +261,78 @@ def plot_cm(cm, names, title='Confusion matrix', cmap=plt.cm.Blues):
     return plt
 
 """
+freqsFromList(fif_and_channels)
+ - input is array of dicts; like:
+    [ {fif=>'filename.fif',chls=>[ ['0000', 'D'] ,['0000','D','HS'],... ]}, {...}, ... ]
+ - output is freq and time for each
+"""
+def freqsFromList(chlist):
+  freqs=[]
+  for fifch in chlist:
+    if not fifch['fif']: continue
+    r = mne.io.Raw(fifch['fif'])
+    for ch in fifch['chls']:
+      if not ch[0]: continue
+      freqs.append( {\
+          'file':  fifch['fif'],\
+          'chnl':  ch,\
+          'finfo': chFreqs(r,ch[0]) \
+      } )
+      #(frr,frq)=chFreqs(r,ch)
+  return freqs
+
+"""
 put it all together
  not in __main__ so '%run getChannels.py' in ipyton doesn't take forever
 """
 def runme():
+  ### EXAMPLE LEARNING
+  #  -- not good
   # read in 10 annotations/fifs
   samples  = readAll(mx=10)
   # train a classifier with them
   (cls,cm) = learn(samples)
   # plot the confusion matrix
   plot_cm(cm,['Bad','Good']).show()
+
+def getChannels(fif):
+    r = mne.io.Raw(fif)
+    return [ x.replace('MEG','') \
+                  for x in r.ch_names   \
+                  if "MEG" in x  ] 
+
+def collapseChnlDS(chds):
+  return [ [ x['fif'],y[0], y ]   for x in chds for y in x['chls'] ]
+
+def bandpassFeatures():
+  ### find better features
+  # sliding bandpass for a whole fif
+  # bin frquences, use roc to see whos better where
+
+  # bchfile='/data/Luna1/MultiModal/Clock/11246/MEG/11246_clock_bad_run1.txt'
+  # bc=readAnnots(bchfile,lambda x: readFif(x, chFreqs))
+
+  # only look at empty room
+  r=re.compile('.*emptyroom.*')
+  bdchtxtfiles = filter(r.match, glob.glob('/data/Luna1/MultiModal/Clock/*/MEG/*bad*.txt') )
+  bc    = [ {'fif': fifFromTxt(x), 'chls': readBad(x) }  for x in bdchtxtfiles if x ]
+  bdfrqs = freqsFromList(bc)
+
+  goodchnls =[];
+  for bt in [ x for x in bdchtxtfiles if fifFromTxt(x) ]:
+    f= fifFromTxt(bt)
+    allch = getChannels(f)
+    badch = [ x[0] for x in readBad(bt)]
+    goodch = [ [x, ['good']] for x in list(set(allch) - set(badch))  ]
+    goodchnls.append({'fif':f, 'chls': goodch})
+  
+  somegood = [ {'fif':x['fif'], 'chls': random.sample(x['chls'],3)}  for x in goodchnls ]
+
+  collapseChnlDS(bc)
+  collapseChnlDS(goodchnls)
+
+  gdfrqs = freqsFromList( somegood )
+
+  
+
 
